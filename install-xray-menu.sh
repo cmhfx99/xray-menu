@@ -51,10 +51,21 @@ install -d -m 755 /usr/local/bin
 touch /opt/xray-menu/.managed-by-xray-menu
 SESSION="/opt/xray-menu/install-$(date +%Y%m%d-%H%M%S)-$$"
 install -d -m 700 "$SESSION"
-VERSION=v26.10.29
 if [ ! -x /opt/xray-menu/xray ]; then
+  VERSION=${XRAY_VERSION:-}
+  if [ -z "$VERSION" ]; then
+    echo '查询 Xray 官方最新稳定版本……'
+    curl -fL --retry 3 --connect-timeout 20 \
+      https://api.github.com/repos/XTLS/Xray-core/releases/latest \
+      -o "$SESSION/release.json"
+    VERSION=$(jq -er '.tag_name | select(type=="string")' "$SESSION/release.json")
+  fi
+  printf '%s\n' "$VERSION" | grep -Eq '^v[0-9]+(\.[0-9]+)*$' || {
+    echo 'Xray 版本号无效，请检查 XRAY_VERSION。'; exit 1;
+  }
   ASSET="Xray-linux-${ARCH}.zip"
   BASE="https://github.com/XTLS/Xray-core/releases/download/${VERSION}"
+  echo "下载 Xray $VERSION ($ARCH)……"
   curl -fL --retry 3 --connect-timeout 20 "$BASE/$ASSET" -o "$SESSION/core.zip"
   curl -fL --retry 3 --connect-timeout 20 "$BASE/$ASSET.dgst" -o "$SESSION/core.dgst"
   EXPECTED=$(awk '/^SHA2-256[[:space:]]*=/{print $NF}' "$SESSION/core.dgst" | tr A-F a-f)
