@@ -601,8 +601,18 @@ test_selected() {
   if [ "$_proto" = vless ]; then
     _sni=$(printf '%s' "$E"|jq -r '.inbound.streamSettings.realitySettings.serverNames[0]')
     _target=$(printf '%s' "$E"|jq -r '.inbound.streamSettings.realitySettings.target'); _tp=${_target##*:}
-    if curl --noproxy '*' --tlsv1.3 --tls-max 1.3 --connect-timeout 5 --max-time 8 -sS -I -o /dev/null "https://$_sni:$_tp/"; then say 'Reality 目标 TLS 1.3 和证书检查通过。'
-    else say 'Reality 目标检查失败，请核对域名。'; fi
+    # An HTTP response failure does not imply a TLS handshake failure.
+    _tls_result=$(curl --http1.1 --noproxy '*' --tlsv1.3 --tls-max 1.3 \
+      --connect-timeout 5 --max-time 8 -sS -I -o /dev/null \
+      -w '%{time_appconnect} %{ssl_verify_result}' "https://$_sni:$_tp/" \
+      2> "$WORK/target-check.log") && _tls_status=0 || _tls_status=$?
+    if [ "$_tls_status" -eq 0 ]; then
+      say 'Reality 目标 TLS 1.3 和证书检查通过。'
+    elif printf '%s\n' "$_tls_result" | awk 'NF==2&&$1+0>0&&$2==0{ok=1}END{exit !ok}'; then
+      say '目标 TLS 1.3 和证书检查通过；HTTP 响应异常，不据此判断 Reality 失效。'
+    else
+      say "目标 TLS 检查未通过（curl 错误 $_tls_status），请检查网络、证书及 TLS 1.3 支持。"
+    fi
   fi
   _out=$(printf '%s' "$E"|jq -r '.out')
   if [ "$_out" = direct ]; then O='{"protocol":"freedom"}'
