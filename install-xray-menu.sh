@@ -120,6 +120,54 @@ valid_uuid() {
   case "$1" in *[!0-9a-fA-F-]*) return 1;;esac
   printf '%s\n' "$1" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
 }
+valid_ipv4() {
+  printf '%s\n' "$1" | awk -F. 'NF!=4{exit 1}
+    {for(i=1;i<=4;i++)if($i!~/^[0-9]+$/||length($i)>3||$i+0>255)exit 1}'
+}
+public_ipv4() {
+  valid_ipv4 "$1" || return 1
+  printf '%s\n' "$1" | awk -F. '
+    $1==0||$1==10||$1==127||$1>=224{exit 1}
+    $1==169&&$2==254{exit 1}
+    $1==172&&$2>=16&&$2<=31{exit 1}
+    $1==192&&$2==168{exit 1}
+    $1==100&&$2>=64&&$2<=127{exit 1}
+    $1==198&&($2==18||$2==19){exit 1}'
+}
+detect_ipv4() {
+  LOCAL_IPS=
+  if command -v ip >/dev/null 2>&1; then
+    LOCAL_IPS=$(ip -4 addr show scope global 2>/dev/null |
+      awk '$1=="inet"{split($2,a,"/");print a[1]}' | sort -u)
+  else
+    LOCAL_IPS=$(hostname -i 2>/dev/null | tr ' ' '\n' | sort -u)
+  fi
+  LOCAL_IPS=$(printf '%s\n' "$LOCAL_IPS" | awk -F. 'NF==4&&$1!=127&&$1!=169{print}')
+  IP_COUNT=$(printf '%s\n' "$LOCAL_IPS" | awk 'NF{n++}END{print n+0}')
+  case "$IP_COUNT" in
+    0) fail '无法检测本机 IPv4，请检查系统 ip 工具和网卡配置'; return 1;;
+    1) PUBLIC_HOST=$LOCAL_IPS; say "检测到本机 IPv4：$PUBLIC_HOST";;
+    *) say '检测到多个本机 IPv4，请选择用于节点的地址：'
+      printf '%s\n' "$LOCAL_IPS" | awk '{printf "%d. %s\n",NR,$0}'
+      required '选择 IPv4' 1 || return 1
+      case "$REPLY" in ''|*[!0-9]*) return 1;;esac
+      [ "$REPLY" -ge 1 ] && [ "$REPLY" -le "$IP_COUNT" ] || return 1
+      PUBLIC_HOST=$(printf '%s\n' "$LOCAL_IPS" | sed -n "${REPLY}p");;
+  esac
+  valid_ipv4 "$PUBLIC_HOST" || return 1
+  if ! public_ipv4 "$PUBLIC_HOST"; then
+    say '检测到私网地址，正在查询客户端连接所需的公网 IPv4……'
+    DETECTED_PUBLIC=
+    for IP_URL in https://api.ipify.org https://ipv4.icanhazip.com; do
+      DETECTED_PUBLIC=$(curl -4 --noproxy '*' -fsS --connect-timeout 4 --max-time 8 "$IP_URL" 2>/dev/null | tr -d '\r\n')
+      if public_ipv4 "$DETECTED_PUBLIC"; then break; fi
+      DETECTED_PUBLIC=
+    done
+    [ -n "$DETECTED_PUBLIC" ] || { fail '公网 IPv4 查询失败，节点未保存；可检查网络后重试'; return 1; }
+    PUBLIC_HOST=$DETECTED_PUBLIC
+  fi
+  say "客户端连接地址：$PUBLIC_HOST；本机监听：0.0.0.0"
+}
 uri() { jq -rn --arg v "$1" '$v|@uri'; }
 unuri() {
   printf '%s' "$1" | awk '
@@ -437,7 +485,7 @@ new_entry() {
   required '本机监听端口' 443 || return 1; LISTEN_PORT=$REPLY
   valid_port "$LISTEN_PORT" || return 1; LISTEN_PORT=$(printf '%s' "$LISTEN_PORT"|sed 's/^0*//')
   printf '%s' "$S"|jq -e --argjson p "$LISTEN_PORT" '.entries|any(.inbound.port==$p)' >/dev/null && { fail '端口已在本工具中使用'; return 1; }
-  required '客户端连接的公网 IP 或域名' || return 1; PUBLIC_HOST=$REPLY; valid_host "$PUBLIC_HOST" || return 1
+  detect_ipv4 || return 1
   TAG="in-$(od -An -N4 -tx1 /dev/urandom|tr -d ' \n')"
   PUBLIC=
   case "$ENTRY_TYPE" in
