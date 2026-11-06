@@ -695,7 +695,16 @@ error_log="/var/log/xray-menu.log"
 depend() { need net; after firewall; }
 start_pre() {
   checkpath -f -m 0600 /var/log/xray-menu.log
-  ulimit -n 65536 || return 1
+  nofile_limit=65536
+  nofile_hard=$(ulimit -Hn) || return 1
+  case "$nofile_hard" in
+    unlimited) : ;;
+    ''|*[!0-9]*) return 1 ;;
+    *) if [ "$nofile_hard" -lt "$nofile_limit" ]; then
+         nofile_limit=$nofile_hard
+       fi ;;
+  esac
+  ulimit -n "$nofile_limit" || return 1
 }
 XRAY_OPENRC
   chmod 755 "$UNIT"
